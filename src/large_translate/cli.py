@@ -4,6 +4,11 @@ import asyncio
 from enum import Enum
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
 import typer
 from rich.console import Console
 from rich.progress import (
