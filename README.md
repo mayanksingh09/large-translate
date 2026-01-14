@@ -10,6 +10,7 @@ A CLI tool for translating large files using LLM APIs with intelligent chunking.
 - **Intelligent chunking**: Splits large files by paragraphs, never mid-sentence
 - **Context continuity**: Maintains translation consistency across chunks
 - **Format preservation**: DOCX preserves bold/italic/fonts, Markdown preserves structure
+- **Fault tolerance**: Automatic checkpointing with resume on failure
 - **Retry logic**: Automatic exponential backoff for API rate limits
 - **Progress tracking**: Rich progress bar during translation
 
@@ -135,6 +136,32 @@ uv run translate models
 2. **Chunking**: Segments are grouped into chunks that fit within the model's context window
 3. **Translation**: Each chunk is sent to the LLM API with context from previous chunks
 4. **Reconstruction**: Translated segments are reassembled with original formatting preserved
+
+## Fault Tolerance
+
+The tool automatically saves progress during translation, allowing recovery from failures:
+
+- **Checkpoint files**: Progress is saved to `{output_name}.checkpoint.json` after each chunk
+- **Automatic resume**: If translation fails (network error, API limit, crash), simply re-run the same command
+- **Validation**: Checkpoints are validated to ensure they match the current job (same input file, target language, chunk count)
+- **Cleanup**: Checkpoint files are automatically deleted after successful completion
+
+### Recovery Example
+
+```bash
+# Start a translation (interrupted mid-way)
+uv run translate translate large_book.docx Spanish
+# ... process crashes or network fails ...
+
+# Simply re-run the same command to resume
+uv run translate translate large_book.docx Spanish
+# Output: "Resuming from checkpoint: 15/30 chunks completed"
+```
+
+This is especially useful for:
+- Large documents with many chunks
+- Unreliable network connections
+- Batch translations that may take hours
 
 ## License
 
