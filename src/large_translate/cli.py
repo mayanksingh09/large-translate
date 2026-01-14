@@ -185,7 +185,10 @@ def translate(
                 )
 
             console.print()
-            console.print("[green]Batch translation complete![/green]")
+            if stats.get("resumed"):
+                console.print("[green]Batch translation complete (resumed from checkpoint)![/green]")
+            else:
+                console.print("[green]Batch translation complete![/green]")
             console.print(f"  Input: {stats['input_chars']:,} characters")
             console.print(f"  Output: {stats['output_chars']:,} characters")
             console.print(f"  Chunks processed: {stats['chunks']}")
@@ -212,7 +215,10 @@ def translate(
                 )
 
             console.print()
-            console.print("[green]Translation complete![/green]")
+            if stats.get("resumed"):
+                console.print("[green]Translation complete (resumed from checkpoint)![/green]")
+            else:
+                console.print("[green]Translation complete![/green]")
             console.print(f"  Input: {stats['input_chars']:,} characters")
             console.print(f"  Output: {stats['output_chars']:,} characters")
             console.print(f"  Chunks processed: {stats['chunks']}")

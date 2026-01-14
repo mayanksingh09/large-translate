@@ -6,6 +6,12 @@ from pathlib import Path
 from rich.progress import Progress, TaskID
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter
 
+from .checkpoint import (
+    CheckpointData,
+    CheckpointManager,
+    deserialize_segment,
+    serialize_segment,
+)
 from .chunking import Chunk, ChunkingStrategy, ContextManager
 from .models.base import BaseLLMProvider
 from .parsers.base import BaseParser, TextSegment
@@ -38,8 +44,11 @@ class TranslationEngine:
         Translate a file end-to-end.
 
         Returns:
-            Dictionary with translation statistics.
+            Dictionary with translation statistics including 'resumed' if resuming from checkpoint.
         """
+        # Initialize checkpoint manager
+        checkpoint_mgr = CheckpointManager(output_path)
+
         # Parse input file
         segments = self.parser.parse(input_path)
 
@@ -52,20 +61,55 @@ class TranslationEngine:
         if verbose and progress:
             progress.console.print(f"Created {len(chunks)} chunks for translation")
 
+        # Check for existing checkpoint
+        checkpoint = checkpoint_mgr.load()
+        start_chunk = 0
+        translated_segments: list[TextSegment] = []
+        resumed = False
+
+        if checkpoint and checkpoint.engine_type == "real-time":
+            # Validate checkpoint matches current job
+            if (
+                checkpoint.input_path == str(input_path)
+                and checkpoint.target_language == target_language
+                and checkpoint.total_chunks == len(chunks)
+            ):
+                start_chunk = checkpoint.last_completed_chunk + 1
+                # Restore translated segments
+                translated_segments = [
+                    TextSegment(**deserialize_segment(s))
+                    for s in checkpoint.translated_segments
+                ]
+                # Restore context history
+                self.context_manager.previous_translations = checkpoint.context_history
+                resumed = True
+
+                if progress:
+                    progress.console.print(
+                        f"[yellow]Resuming from checkpoint: {start_chunk}/{len(chunks)} chunks completed[/yellow]"
+                    )
+
         # Set up progress tracking
         task_id: TaskID | None = None
         if progress:
             task_id = progress.add_task(
                 f"Translating to {target_language}",
                 total=len(chunks),
+                completed=start_chunk,
             )
 
-        # Translate each chunk
-        translated_segments: list[TextSegment] = []
+        # Calculate stats for already-translated chunks
         total_input_chars = 0
         total_output_chars = 0
 
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks[:start_chunk]):
+            for seg in chunk.segments:
+                total_input_chars += len(seg.text)
+        for seg in translated_segments:
+            total_output_chars += len(seg.text)
+
+        # Translate remaining chunks
+        for chunk in chunks[start_chunk:]:
             context = self.context_manager.get_context(chunk.chunk_index)
 
             translated_chunk = await self._translate_chunk(
@@ -83,6 +127,24 @@ class TranslationEngine:
             for seg in translated_chunk:
                 total_output_chars += len(seg.text)
 
+            # Save checkpoint after each successful chunk
+            checkpoint_mgr.save(
+                CheckpointData(
+                    engine_type="real-time",
+                    input_path=str(input_path),
+                    output_path=str(output_path),
+                    target_language=target_language,
+                    source_language=source_language,
+                    chunk_size=self.chunker.max_tokens,
+                    last_completed_chunk=chunk.chunk_index,
+                    total_chunks=len(chunks),
+                    translated_segments=[
+                        serialize_segment(s) for s in translated_segments
+                    ],
+                    context_history=self.context_manager.previous_translations,
+                )
+            )
+
             # Update progress
             if progress and task_id is not None:
                 progress.advance(task_id)
@@ -90,12 +152,18 @@ class TranslationEngine:
         # Write output
         self.parser.write(translated_segments, output_path, input_path)
 
-        return {
+        # Clean up checkpoint on success
+        checkpoint_mgr.clean()
+
+        result = {
             "input_chars": total_input_chars,
             "output_chars": total_output_chars,
             "chunks": len(chunks),
             "segments": len(translated_segments),
         }
+        if resumed:
+            result["resumed"] = True
+        return result
 
     @retry(
         wait=wait_exponential_jitter(initial=1, max=60, jitter=5),

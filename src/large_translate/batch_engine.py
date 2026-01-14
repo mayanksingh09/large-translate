@@ -5,6 +5,12 @@ from pathlib import Path
 
 from rich.progress import Progress
 
+from .checkpoint import (
+    CheckpointData,
+    CheckpointManager,
+    deserialize_segment,
+    serialize_segment,
+)
 from .chunking import Chunk, ChunkingStrategy
 from .models.base import BaseLLMProvider, BatchRequest
 from .parsers.base import BaseParser, TextSegment
@@ -46,8 +52,11 @@ class BatchTranslationEngine:
             verbose: Enable verbose output.
 
         Returns:
-            Dictionary with translation statistics.
+            Dictionary with translation statistics including 'resumed' if resuming from checkpoint.
         """
+        # Initialize checkpoint manager
+        checkpoint_mgr = CheckpointManager(output_path)
+
         # 1. Parse input file
         segments = self.parser.parse(input_path)
         if verbose and progress:
@@ -90,12 +99,61 @@ class BatchTranslationEngine:
                 "batch_id": None,
             }
 
-        # 4. Submit batch
-        if progress:
-            progress.console.print(f"Submitting batch with {len(batch_requests)} requests...")
-        batch_id = await self.llm.create_batch(batch_requests)
-        if progress:
-            progress.console.print(f"Batch created: {batch_id}")
+        # Serialize chunk mapping for checkpoint
+        chunk_mapping_serialized = {
+            custom_id: {
+                "index": idx,
+                "segments": [serialize_segment(s) for s in chunk.segments],
+            }
+            for custom_id, (idx, chunk) in chunk_mapping.items()
+        }
+
+        # Check for existing checkpoint
+        checkpoint = checkpoint_mgr.load()
+        batch_id = None
+        resumed = False
+
+        if checkpoint and checkpoint.engine_type == "batch":
+            # Validate checkpoint matches current job
+            if (
+                checkpoint.input_path == str(input_path)
+                and checkpoint.target_language == target_language
+                and checkpoint.total_chunks == len(chunks)
+                and checkpoint.batch_id
+            ):
+                batch_id = checkpoint.batch_id
+                resumed = True
+                if progress:
+                    progress.console.print(
+                        f"[yellow]Resuming from checkpoint: batch {batch_id} (stage: {checkpoint.batch_stage})[/yellow]"
+                    )
+
+        # 4. Submit batch (if not resuming)
+        if batch_id is None:
+            if progress:
+                progress.console.print(f"Submitting batch with {len(batch_requests)} requests...")
+            batch_id = await self.llm.create_batch(batch_requests)
+            if progress:
+                progress.console.print(f"Batch created: {batch_id}")
+
+            # CRITICAL: Save checkpoint immediately after getting batch_id
+            checkpoint_mgr.save(
+                CheckpointData(
+                    engine_type="batch",
+                    input_path=str(input_path),
+                    output_path=str(output_path),
+                    target_language=target_language,
+                    source_language=source_language,
+                    chunk_size=self.chunker.max_tokens,
+                    last_completed_chunk=-1,
+                    total_chunks=len(chunks),
+                    translated_segments=[],
+                    context_history=[],
+                    batch_id=batch_id,
+                    batch_stage="submitted",
+                    chunk_mapping=chunk_mapping_serialized,
+                )
+            )
 
         # 5. Poll for completion
         task_id = None
@@ -109,6 +167,25 @@ class BatchTranslationEngine:
             status = await self.llm.get_batch_status(batch_id)
             if progress and task_id is not None:
                 progress.update(task_id, completed=status.completed)
+
+            # Update checkpoint during polling
+            checkpoint_mgr.save(
+                CheckpointData(
+                    engine_type="batch",
+                    input_path=str(input_path),
+                    output_path=str(output_path),
+                    target_language=target_language,
+                    source_language=source_language,
+                    chunk_size=self.chunker.max_tokens,
+                    last_completed_chunk=status.completed - 1,
+                    total_chunks=len(chunks),
+                    translated_segments=[],
+                    context_history=[],
+                    batch_id=batch_id,
+                    batch_stage="polling",
+                    chunk_mapping=chunk_mapping_serialized,
+                )
+            )
 
             if status.status == "completed":
                 break
@@ -124,6 +201,25 @@ class BatchTranslationEngine:
         if progress:
             progress.console.print("Fetching results...")
         results = await self.llm.get_batch_results(batch_id)
+
+        # Update checkpoint after fetching results
+        checkpoint_mgr.save(
+            CheckpointData(
+                engine_type="batch",
+                input_path=str(input_path),
+                output_path=str(output_path),
+                target_language=target_language,
+                source_language=source_language,
+                chunk_size=self.chunker.max_tokens,
+                last_completed_chunk=len(chunks) - 1,
+                total_chunks=len(chunks),
+                translated_segments=[],
+                context_history=[],
+                batch_id=batch_id,
+                batch_stage="results_fetched",
+                chunk_mapping=chunk_mapping_serialized,
+            )
+        )
 
         # 7. Build result mapping
         translations: dict[str, str] = {}
@@ -169,13 +265,19 @@ class BatchTranslationEngine:
         # 9. Write output
         self.parser.write(translated_segments, output_path, input_path)
 
-        # 10. Calculate stats
+        # 10. Clean up checkpoint on success
+        checkpoint_mgr.clean()
+
+        # 11. Calculate stats
         total_input = sum(len(s.text) for s in segments)
         total_output = sum(len(s.text) for s in translated_segments)
 
-        return {
+        result = {
             "input_chars": total_input,
             "output_chars": total_output,
             "chunks": len(chunks),
             "batch_id": batch_id,
         }
+        if resumed:
+            result["resumed"] = True
+        return result
