@@ -5,8 +5,9 @@ from datetime import datetime
 from google import genai
 from google.genai import types
 
-from .base import BaseLLMProvider, BatchRequest, BatchResult, BatchStatus
+from .base import BaseLLMProvider, BatchRequest, BatchResult, BatchStatus, SentimentBatchRequest
 from ..prompts import TRANSLATION_SYSTEM_PROMPT, build_translation_prompt
+from ..sentiment_prompts import SENTIMENT_SYSTEM_PROMPT, build_sentiment_prompt
 
 
 class GoogleProvider(BaseLLMProvider):
@@ -133,3 +134,67 @@ class GoogleProvider(BaseLLMProvider):
                 )
             )
         return results
+
+    # Sentiment analysis methods
+
+    async def analyze_sentiment(
+        self,
+        sentences: list[str],
+        labels: list[str],
+    ) -> str:
+        user_prompt = build_sentiment_prompt(
+            sentences=sentences,
+            labels=labels,
+        )
+
+        # Google doesn't support separate system role, so concatenate
+        full_prompt = f"{SENTIMENT_SYSTEM_PROMPT}\n\n{user_prompt}"
+
+        response = await self.client.aio.models.generate_content(
+            model=self.MODEL_NAME,
+            contents=full_prompt,
+            config=types.GenerateContentConfig(
+                max_output_tokens=self.max_output_tokens,
+                temperature=0.1,  # Lower temperature for classification
+                response_mime_type="application/json",
+            ),
+        )
+
+        return response.text or "{}"
+
+    async def create_sentiment_batch(
+        self,
+        requests: list[SentimentBatchRequest],
+    ) -> str:
+        inline_requests = []
+        for req in requests:
+            user_prompt = build_sentiment_prompt(
+                sentences=req.sentences,
+                labels=req.labels,
+            )
+            full_prompt = f"{SENTIMENT_SYSTEM_PROMPT}\n\n{user_prompt}"
+            inline_requests.append(
+                {
+                    "key": req.custom_id,
+                    "request": {
+                        "contents": [
+                            {
+                                "parts": [{"text": full_prompt}],
+                                "role": "user",
+                            }
+                        ],
+                        "generation_config": {
+                            "temperature": 0.1,
+                            "max_output_tokens": self.max_output_tokens,
+                            "response_mime_type": "application/json",
+                        },
+                    },
+                }
+            )
+
+        batch = await self.client.aio.batches.create(
+            model=self.MODEL_NAME,
+            src=inline_requests,
+            config={"display_name": f"sentiment-{datetime.now().isoformat()}"},
+        )
+        return batch.name

@@ -6,8 +6,9 @@ import json
 import tiktoken
 from openai import AsyncOpenAI
 
-from .base import BaseLLMProvider, BatchRequest, BatchResult, BatchStatus
+from .base import BaseLLMProvider, BatchRequest, BatchResult, BatchStatus, SentimentBatchRequest
 from ..prompts import TRANSLATION_SYSTEM_PROMPT, build_translation_prompt
+from ..sentiment_prompts import SENTIMENT_SYSTEM_PROMPT, build_sentiment_prompt
 
 
 class OpenAIProvider(BaseLLMProvider):
@@ -149,3 +150,71 @@ class OpenAIProvider(BaseLLMProvider):
                     )
                 )
         return results
+
+    # Sentiment analysis methods
+
+    async def analyze_sentiment(
+        self,
+        sentences: list[str],
+        labels: list[str],
+    ) -> str:
+        user_prompt = build_sentiment_prompt(
+            sentences=sentences,
+            labels=labels,
+        )
+
+        response = await self.client.chat.completions.create(
+            model=self.MODEL_NAME,
+            messages=[
+                {"role": "system", "content": SENTIMENT_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_completion_tokens=self.max_output_tokens,
+            temperature=0.1,  # Lower temperature for classification
+            response_format={"type": "json_object"},
+        )
+
+        return response.choices[0].message.content or "{}"
+
+    async def create_sentiment_batch(
+        self,
+        requests: list[SentimentBatchRequest],
+    ) -> str:
+        lines = []
+        for req in requests:
+            user_prompt = build_sentiment_prompt(
+                sentences=req.sentences,
+                labels=req.labels,
+            )
+            lines.append(
+                json.dumps(
+                    {
+                        "custom_id": req.custom_id,
+                        "method": "POST",
+                        "url": "/v1/chat/completions",
+                        "body": {
+                            "model": self.MODEL_NAME,
+                            "messages": [
+                                {"role": "system", "content": SENTIMENT_SYSTEM_PROMPT},
+                                {"role": "user", "content": user_prompt},
+                            ],
+                            "max_completion_tokens": self.max_output_tokens,
+                            "temperature": 0.1,
+                            "response_format": {"type": "json_object"},
+                        },
+                    }
+                )
+            )
+
+        jsonl_content = "\n".join(lines)
+        file = await self.client.files.create(
+            file=io.BytesIO(jsonl_content.encode("utf-8")),
+            purpose="batch",
+        )
+
+        batch = await self.client.batches.create(
+            input_file_id=file.id,
+            endpoint="/v1/chat/completions",
+            completion_window="24h",
+        )
+        return batch.id

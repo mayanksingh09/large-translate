@@ -21,10 +21,12 @@ from rich.progress import (
 )
 
 from .batch_engine import BatchTranslationEngine
+from .batch_sentiment_engine import BatchSentimentEngine
 from .config import get_settings
 from .engine import TranslationEngine
 from .models import AnthropicProvider, GoogleProvider, OpenAIProvider
 from .parsers import DocxParser, MarkdownParser, TxtParser
+from .sentiment_engine import SentimentEngine
 
 app = typer.Typer(
     name="translate",
@@ -274,6 +276,138 @@ def list_models():
             console.print(f"  [cyan]{provider.value}[/cyan]")
             console.print(f"    [yellow]Not configured: {e}[/yellow]")
             console.print()
+
+
+@app.command("sentiment")
+def sentiment(
+    input_file: Path = typer.Argument(
+        ...,
+        help="Input file to analyze (.txt, .docx, .md)",
+        exists=True,
+        readable=True,
+    ),
+    labels: str = typer.Option(
+        "positive,negative,neutral",
+        "--labels",
+        "-l",
+        help="Comma-separated sentiment labels (e.g., 'positive,negative,neutral')",
+    ),
+    output_file: Path = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Output JSON file path (default: input_sentiment.json)",
+    ),
+    model: ModelProvider = typer.Option(
+        ModelProvider.OPENAI,
+        "--model",
+        "-m",
+        help="LLM provider to use",
+    ),
+    batch_size: int = typer.Option(
+        20,
+        "--batch-size",
+        "-s",
+        help="Sentences per API call",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose output",
+    ),
+    batch: bool = typer.Option(
+        False,
+        "--batch",
+        "-b",
+        help="Use batch API (50% cost reduction, 24h turnaround)",
+    ),
+    poll_interval: int = typer.Option(
+        60,
+        "--poll-interval",
+        help="Seconds between batch status checks (batch mode only)",
+    ),
+):
+    """Analyze sentiment of a file and output JSON results."""
+    # Parse labels
+    label_list = [lbl.strip() for lbl in labels.split(",") if lbl.strip()]
+    if len(label_list) < 2:
+        console.print("[red]Error: At least 2 labels are required[/red]")
+        raise typer.Exit(1)
+
+    # Validate input file
+    parser = get_parser(input_file)
+
+    # Generate output path if not specified
+    if output_file is None:
+        output_file = input_file.with_suffix(".sentiment.json")
+
+    # Get LLM provider
+    try:
+        provider = get_provider(model)
+    except Exception as e:
+        console.print(f"[red]Error initializing {model.value} provider: {e}[/red]")
+        raise typer.Exit(1)
+
+    # Display configuration
+    console.print(f"[bold]Analyzing Sentiment[/bold] {input_file.name}")
+    console.print(f"  Labels: {', '.join(label_list)}")
+    console.print(f"  Model: {model.value} ({provider.model_id})")
+    console.print(
+        f"  Mode: {'Batch (50% cost, 24h turnaround)' if batch else 'Real-time'}"
+    )
+    console.print(f"  Output: {output_file}")
+    console.print()
+
+    try:
+        if batch:
+            engine = BatchSentimentEngine(
+                llm_provider=provider,
+                parser=parser,
+                batch_size=batch_size,
+            )
+            with create_progress() as progress:
+                stats = asyncio.run(
+                    engine.analyze_file_batch(
+                        input_path=input_file,
+                        output_path=output_file,
+                        labels=label_list,
+                        poll_interval=poll_interval,
+                        progress=progress,
+                        verbose=verbose,
+                    )
+                )
+        else:
+            engine = SentimentEngine(
+                llm_provider=provider,
+                parser=parser,
+                batch_size=batch_size,
+            )
+            with create_progress() as progress:
+                stats = asyncio.run(
+                    engine.analyze_file(
+                        input_path=input_file,
+                        output_path=output_file,
+                        labels=label_list,
+                        progress=progress,
+                        verbose=verbose,
+                    )
+                )
+
+        console.print()
+        console.print("[green]Sentiment analysis complete![/green]")
+        console.print(f"  Sentences analyzed: {stats['sentences']}")
+        console.print("  Label distribution:")
+        for label, count in stats["label_counts"].items():
+            pct = (count / stats["sentences"] * 100) if stats["sentences"] > 0 else 0
+            console.print(f"    {label}: {count} ({pct:.1f}%)")
+        console.print(f"  Output file: {output_file}")
+
+    except Exception as e:
+        console.print(f"[red]Sentiment analysis failed: {e}[/red]")
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

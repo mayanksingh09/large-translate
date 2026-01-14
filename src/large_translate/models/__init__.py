@@ -1,6 +1,12 @@
 """LLM provider implementations."""
 
-from .base import BaseLLMProvider, BatchRequest, BatchResult, BatchStatus
+from .base import (
+    BaseLLMProvider,
+    BatchRequest,
+    BatchResult,
+    BatchStatus,
+    SentimentBatchRequest,
+)
 from .openai import OpenAIProvider
 from .anthropic import AnthropicProvider
 from .google import GoogleProvider
@@ -10,6 +16,7 @@ __all__ = [
     "BatchRequest",
     "BatchResult",
     "BatchStatus",
+    "SentimentBatchRequest",
     "OpenAIProvider",
     "AnthropicProvider",
     "GoogleProvider",

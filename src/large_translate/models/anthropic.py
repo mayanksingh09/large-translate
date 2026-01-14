@@ -2,8 +2,9 @@
 
 from anthropic import AsyncAnthropic
 
-from .base import BaseLLMProvider, BatchRequest, BatchResult, BatchStatus
+from .base import BaseLLMProvider, BatchRequest, BatchResult, BatchStatus, SentimentBatchRequest
 from ..prompts import TRANSLATION_SYSTEM_PROMPT, build_translation_prompt
+from ..sentiment_prompts import SENTIMENT_SYSTEM_PROMPT, build_sentiment_prompt
 
 
 class AnthropicProvider(BaseLLMProvider):
@@ -117,3 +118,49 @@ class AnthropicProvider(BaseLLMProvider):
                 )
             )
         return results
+
+    # Sentiment analysis methods
+
+    async def analyze_sentiment(
+        self,
+        sentences: list[str],
+        labels: list[str],
+    ) -> str:
+        user_prompt = build_sentiment_prompt(
+            sentences=sentences,
+            labels=labels,
+        )
+
+        response = await self.client.messages.create(
+            model=self.MODEL_NAME,
+            max_tokens=self.max_output_tokens,
+            system=SENTIMENT_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+
+        return response.content[0].text if response.content else "{}"
+
+    async def create_sentiment_batch(
+        self,
+        requests: list[SentimentBatchRequest],
+    ) -> str:
+        batch_requests = []
+        for req in requests:
+            user_prompt = build_sentiment_prompt(
+                sentences=req.sentences,
+                labels=req.labels,
+            )
+            batch_requests.append(
+                {
+                    "custom_id": req.custom_id,
+                    "params": {
+                        "model": self.MODEL_NAME,
+                        "max_tokens": self.max_output_tokens,
+                        "system": SENTIMENT_SYSTEM_PROMPT,
+                        "messages": [{"role": "user", "content": user_prompt}],
+                    },
+                }
+            )
+
+        batch = await self.client.messages.batches.create(requests=batch_requests)
+        return batch.id

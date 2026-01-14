@@ -32,6 +32,15 @@ class BatchResult:
     error: str | None = None
 
 
+@dataclass
+class SentimentBatchRequest:
+    """A single sentiment analysis request in a batch job."""
+
+    custom_id: str
+    sentences: list[str]
+    labels: list[str]
+
+
 class BaseLLMProvider(ABC):
     """Abstract base class for LLM providers."""
 
@@ -124,5 +133,41 @@ class BaseLLMProvider(ABC):
 
         Returns:
             List of results for each request in the batch.
+        """
+        pass
+
+    # Sentiment analysis methods
+
+    @abstractmethod
+    async def analyze_sentiment(
+        self,
+        sentences: list[str],
+        labels: list[str],
+    ) -> str:
+        """
+        Analyze sentiment of sentences.
+
+        Args:
+            sentences: List of sentences to analyze.
+            labels: List of valid sentiment labels.
+
+        Returns:
+            JSON string with sentiment results.
+        """
+        pass
+
+    @abstractmethod
+    async def create_sentiment_batch(
+        self,
+        requests: list[SentimentBatchRequest],
+    ) -> str:
+        """
+        Create a batch job for sentiment analysis requests.
+
+        Args:
+            requests: List of sentiment batch requests.
+
+        Returns:
+            The batch job ID.
         """
         pass
