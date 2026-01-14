@@ -6,6 +6,7 @@ A CLI tool for translating large files using LLM APIs with intelligent chunking.
 
 - **Multi-provider support**: OpenAI (gpt-5.2), Anthropic (claude-sonnet-4-5), Google (gemini-3-flash-preview)
 - **Multiple file formats**: `.txt`, `.docx`, `.md`
+- **Batch inference**: 50% cost reduction with 24-hour turnaround using batch APIs
 - **Intelligent chunking**: Splits large files by paragraphs, never mid-sentence
 - **Context continuity**: Maintains translation consistency across chunks
 - **Format preservation**: DOCX preserves bold/italic/fonts, Markdown preserves structure
@@ -73,7 +74,26 @@ Options:
   -s, --source LANGUAGE     Source language (auto-detect if not specified)
   -c, --chunk-size INT      Maximum tokens per chunk (default: 4000)
   -v, --verbose             Enable verbose output
+  -b, --batch               Use batch API (50% cost, 24h turnaround)
+  --poll-interval INT       Seconds between batch status checks (default: 60)
 ```
+
+### Batch Mode
+
+For large-scale translations, use batch mode to reduce costs by 50%:
+
+```bash
+# Translate using batch API (50% cheaper, completes within 24 hours)
+uv run translate translate large_document.txt Spanish --batch
+
+# Batch mode with custom poll interval
+uv run translate translate book.docx French --batch --poll-interval 120 -m anthropic
+```
+
+Batch mode submits all chunks as a single batch job and polls for completion. This is ideal for:
+- Large documents that don't need immediate results
+- Cost-sensitive bulk translations
+- Non-urgent translation workflows
 
 ### Examples
 

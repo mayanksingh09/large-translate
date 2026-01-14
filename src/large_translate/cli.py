@@ -20,6 +20,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
+from .batch_engine import BatchTranslationEngine
 from .config import get_settings
 from .engine import TranslationEngine
 from .models import AnthropicProvider, GoogleProvider, OpenAIProvider
@@ -126,6 +127,17 @@ def translate(
         "-v",
         help="Enable verbose output",
     ),
+    batch: bool = typer.Option(
+        False,
+        "--batch",
+        "-b",
+        help="Use batch API (50% cost reduction, 24h turnaround)",
+    ),
+    poll_interval: int = typer.Option(
+        60,
+        "--poll-interval",
+        help="Seconds between batch status checks (batch mode only)",
+    ),
 ):
     """Translate a file to the target language."""
     # Validate input file
@@ -143,39 +155,68 @@ def translate(
         console.print(f"[red]Error initializing {model.value} provider: {e}[/red]")
         raise typer.Exit(1)
 
-    # Create engine
-    engine = TranslationEngine(
-        llm_provider=provider,
-        parser=parser,
-        chunk_size=chunk_size,
-    )
-
     # Run translation
     console.print(f"[bold]Translating[/bold] {input_file.name}")
     console.print(f"  Target: {target_language}")
     console.print(f"  Model: {model.value} ({provider.model_id})")
+    console.print(f"  Mode: {'Batch (50% cost, 24h turnaround)' if batch else 'Real-time'}")
     console.print(f"  Output: {output_file}")
     console.print()
 
     try:
-        with create_progress() as progress:
-            stats = asyncio.run(
-                engine.translate_file(
-                    input_path=input_file,
-                    output_path=output_file,
-                    target_language=target_language,
-                    source_language=source_language,
-                    progress=progress,
-                    verbose=verbose,
-                )
+        if batch:
+            # Use batch translation engine
+            engine = BatchTranslationEngine(
+                llm_provider=provider,
+                parser=parser,
+                chunk_size=chunk_size,
             )
+            with create_progress() as progress:
+                stats = asyncio.run(
+                    engine.translate_file_batch(
+                        input_path=input_file,
+                        output_path=output_file,
+                        target_language=target_language,
+                        source_language=source_language,
+                        poll_interval=poll_interval,
+                        progress=progress,
+                        verbose=verbose,
+                    )
+                )
 
-        console.print()
-        console.print("[green]Translation complete![/green]")
-        console.print(f"  Input: {stats['input_chars']:,} characters")
-        console.print(f"  Output: {stats['output_chars']:,} characters")
-        console.print(f"  Chunks processed: {stats['chunks']}")
-        console.print(f"  Output file: {output_file}")
+            console.print()
+            console.print("[green]Batch translation complete![/green]")
+            console.print(f"  Input: {stats['input_chars']:,} characters")
+            console.print(f"  Output: {stats['output_chars']:,} characters")
+            console.print(f"  Chunks processed: {stats['chunks']}")
+            if stats.get("batch_id"):
+                console.print(f"  Batch ID: {stats['batch_id']}")
+            console.print(f"  Output file: {output_file}")
+        else:
+            # Use real-time translation engine
+            engine = TranslationEngine(
+                llm_provider=provider,
+                parser=parser,
+                chunk_size=chunk_size,
+            )
+            with create_progress() as progress:
+                stats = asyncio.run(
+                    engine.translate_file(
+                        input_path=input_file,
+                        output_path=output_file,
+                        target_language=target_language,
+                        source_language=source_language,
+                        progress=progress,
+                        verbose=verbose,
+                    )
+                )
+
+            console.print()
+            console.print("[green]Translation complete![/green]")
+            console.print(f"  Input: {stats['input_chars']:,} characters")
+            console.print(f"  Output: {stats['output_chars']:,} characters")
+            console.print(f"  Chunks processed: {stats['chunks']}")
+            console.print(f"  Output file: {output_file}")
 
     except Exception as e:
         console.print(f"[red]Translation failed: {e}[/red]")

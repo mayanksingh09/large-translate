@@ -1,9 +1,11 @@
 """Google Gemini provider implementation."""
 
+from datetime import datetime
+
 from google import genai
 from google.genai import types
 
-from .base import BaseLLMProvider
+from .base import BaseLLMProvider, BatchRequest, BatchResult, BatchStatus
 from ..prompts import TRANSLATION_SYSTEM_PROMPT, build_translation_prompt
 
 
@@ -61,3 +63,73 @@ class GoogleProvider(BaseLLMProvider):
     def count_tokens(self, text: str) -> int:
         # Rough estimate: ~4 characters per token
         return len(text) // 4
+
+    # Batch inference methods
+
+    async def create_batch(self, requests: list[BatchRequest]) -> str:
+        inline_requests = []
+        for req in requests:
+            user_prompt = build_translation_prompt(
+                text=req.text,
+                target_language=req.target_language,
+                source_language=req.source_language,
+            )
+            full_prompt = f"{TRANSLATION_SYSTEM_PROMPT}\n\n{user_prompt}"
+            inline_requests.append(
+                {
+                    "key": req.custom_id,
+                    "request": {
+                        "contents": [
+                            {
+                                "parts": [{"text": full_prompt}],
+                                "role": "user",
+                            }
+                        ],
+                        "generation_config": {
+                            "temperature": 0.3,
+                            "max_output_tokens": self.max_output_tokens,
+                        },
+                    },
+                }
+            )
+
+        batch = await self.client.aio.batches.create(
+            model=self.MODEL_NAME,
+            src=inline_requests,
+            config={"display_name": f"translate-{datetime.now().isoformat()}"},
+        )
+        return batch.name
+
+    async def get_batch_status(self, batch_id: str) -> BatchStatus:
+        batch = await self.client.aio.batches.get(name=batch_id)
+        # Map Google batch states to our status
+        state = getattr(batch, "state", "")
+        if state in ("JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED"):
+            status = "completed"
+        else:
+            status = "processing"
+        return BatchStatus(
+            status=status,
+            completed=getattr(batch, "succeeded_count", 0),
+            total=getattr(batch, "total_count", 0),
+        )
+
+    async def get_batch_results(self, batch_id: str) -> list[BatchResult]:
+        batch = await self.client.aio.batches.get(name=batch_id)
+        results = []
+        responses = getattr(batch, "responses", []) or []
+        for resp in responses:
+            translated_text = None
+            error = None
+            if hasattr(resp, "response") and resp.response:
+                translated_text = getattr(resp.response, "text", None)
+            if hasattr(resp, "error") and resp.error:
+                error = str(resp.error)
+            results.append(
+                BatchResult(
+                    custom_id=resp.key,
+                    translated_text=translated_text,
+                    error=error,
+                )
+            )
+        return results

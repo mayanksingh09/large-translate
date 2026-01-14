@@ -2,7 +2,7 @@
 
 from anthropic import AsyncAnthropic
 
-from .base import BaseLLMProvider
+from .base import BaseLLMProvider, BatchRequest, BatchResult, BatchStatus
 from ..prompts import TRANSLATION_SYSTEM_PROMPT, build_translation_prompt
 
 
@@ -56,3 +56,64 @@ class AnthropicProvider(BaseLLMProvider):
     def count_tokens(self, text: str) -> int:
         # Rough estimate: ~4 characters per token
         return len(text) // 4
+
+    # Batch inference methods
+
+    async def create_batch(self, requests: list[BatchRequest]) -> str:
+        batch_requests = []
+        for req in requests:
+            user_prompt = build_translation_prompt(
+                text=req.text,
+                target_language=req.target_language,
+                source_language=req.source_language,
+            )
+            batch_requests.append(
+                {
+                    "custom_id": req.custom_id,
+                    "params": {
+                        "model": self.MODEL_NAME,
+                        "max_tokens": self.max_output_tokens,
+                        "system": TRANSLATION_SYSTEM_PROMPT,
+                        "messages": [{"role": "user", "content": user_prompt}],
+                    },
+                }
+            )
+
+        batch = await self.client.messages.batches.create(requests=batch_requests)
+        return batch.id
+
+    async def get_batch_status(self, batch_id: str) -> BatchStatus:
+        batch = await self.client.messages.batches.retrieve(batch_id)
+        counts = batch.request_counts
+        total = (
+            counts.processing
+            + counts.succeeded
+            + counts.errored
+            + counts.canceled
+            + counts.expired
+        )
+        return BatchStatus(
+            status="completed" if batch.processing_status == "ended" else "processing",
+            completed=counts.succeeded,
+            total=total,
+        )
+
+    async def get_batch_results(self, batch_id: str) -> list[BatchResult]:
+        results = []
+        async for result in self.client.messages.batches.results(batch_id):
+            translated_text = None
+            error = None
+            if result.result and result.result.message:
+                content = result.result.message.content
+                if content:
+                    translated_text = content[0].text
+            if hasattr(result, "error") and result.error:
+                error = str(result.error)
+            results.append(
+                BatchResult(
+                    custom_id=result.custom_id,
+                    translated_text=translated_text,
+                    error=error,
+                )
+            )
+        return results

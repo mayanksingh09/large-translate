@@ -1,6 +1,35 @@
 """Abstract base class for LLM providers."""
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+
+
+@dataclass
+class BatchRequest:
+    """A single request in a batch job."""
+
+    custom_id: str
+    text: str
+    target_language: str
+    source_language: str | None = None
+
+
+@dataclass
+class BatchStatus:
+    """Status of a batch job."""
+
+    status: str  # "processing", "completed", "failed", "canceling"
+    completed: int
+    total: int
+
+
+@dataclass
+class BatchResult:
+    """Result of a single request in a batch job."""
+
+    custom_id: str
+    translated_text: str | None
+    error: str | None = None
 
 
 class BaseLLMProvider(ABC):
@@ -55,4 +84,45 @@ class BaseLLMProvider(ABC):
     @abstractmethod
     def count_tokens(self, text: str) -> int:
         """Count tokens in text."""
+        pass
+
+    # Batch inference methods
+
+    @abstractmethod
+    async def create_batch(self, requests: list[BatchRequest]) -> str:
+        """
+        Create a batch job for multiple translation requests.
+
+        Args:
+            requests: List of batch requests to process.
+
+        Returns:
+            The batch job ID.
+        """
+        pass
+
+    @abstractmethod
+    async def get_batch_status(self, batch_id: str) -> BatchStatus:
+        """
+        Get the status of a batch job.
+
+        Args:
+            batch_id: The batch job ID.
+
+        Returns:
+            The current status of the batch job.
+        """
+        pass
+
+    @abstractmethod
+    async def get_batch_results(self, batch_id: str) -> list[BatchResult]:
+        """
+        Get the results of a completed batch job.
+
+        Args:
+            batch_id: The batch job ID.
+
+        Returns:
+            List of results for each request in the batch.
+        """
         pass
